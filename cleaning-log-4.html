@@ -930,7 +930,7 @@ async function toggleStatus(name){
   }
 }
 
-function resizeImage(file, maxDim = 600, quality = 0.45){
+function resizeImage(file, maxDim = 320, quality = 0.3){
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
