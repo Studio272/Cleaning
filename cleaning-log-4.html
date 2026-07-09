@@ -961,20 +961,30 @@ async function handleFile(e, name){
   if(!isEditable(currentDate)){ showToast('แก้ไขได้เฉพาะวันนี้เท่านั้น', true); return; }
   if(!firebaseReady){ showToast('ยังไม่ได้ตั้งค่า Firebase — ดูคำแนะนำด้านบนของหน้า', true); return; }
   const hint = document.querySelector(`.upload-hint[data-name="${name}"]`);
-  if(hint){ hint.classList.add('busy'); hint.textContent = 'กำลังอัปโหลด...'; }
+  if(hint){ hint.classList.add('busy'); hint.textContent = 'กำลังประมวลผล...'; }
   try{
     const dataUrl = await resizeImage(file);
     const oldUrl = dayData[name].photoURL;
-    const url = await uploadPhoto(currentDate, name, dataUrl);
-    if(oldUrl && oldUrl !== url){ try{ await storage.refFromURL(oldUrl).delete(); }catch(err){} }
-    dayData[name].photoURL = url;
+    
+    // อัพเดต UI ทันที (Optimistic UI)
+    dayData[name].photoURL = dataUrl; // ใช้รูป local แสดงผลไปก่อน
     dayData[name].status = 'done';
     if(!dayData[name].time) dayData[name].time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
-    await saveDayDoc();
     renderDaily();
+    
+    // ปล่อยให้อัพโหลดทำงานเบื้องหลัง
+    uploadPhoto(currentDate, name, dataUrl).then(async (url) => {
+      if(oldUrl && oldUrl !== url){ try{ await storage.refFromURL(oldUrl).delete(); }catch(err){} }
+      dayData[name].photoURL = url; // เปลี่ยนเป็นลิงก์จริงจาก server
+      await saveDayDoc();
+    }).catch(err => {
+      console.error('Background upload failed', err);
+      // ไม่ต้องแจ้งผู้ใช้เพื่อไม่ให้กวนใจตามโจทย์ แต่ log ไว้เผื่อดูทีหลัง
+    });
+    
   }catch(err){
     console.error(err);
-    showToast('อัปโหลดรูปไม่สำเร็จ: ' + err.message, true);
+    showToast('ประมวลผลรูปไม่สำเร็จ: ' + err.message, true);
     renderDaily();
   }
 }
