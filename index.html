@@ -501,6 +501,7 @@ try{
 
 let ZONES = [...DEFAULT_ZONES];
 let EMPLOYEES = [...DEFAULT_EMPLOYEES];
+let EMPLOYEE_NOTES = {};
 let currentDate = todayStr();
 let dayData = null;
 let currentView = 'daily';
@@ -597,6 +598,22 @@ function showConfirm(msg){
 }
 
 /* ---------------- Firestore helpers (compat API) ---------------- */
+async function fetchEmployeeNotes(){
+  if(!firebaseReady) return null;
+  try{
+    const snap = await db.collection('config').doc('notes').get();
+    return snap.exists ? (snap.data().notes || {}) : {};
+  }catch(e){ console.error(e); return {}; }
+}
+async function saveEmployeeNotes(){
+  if(!firebaseReady) return;
+  try{ await db.collection('config').doc('notes').set({notes: EMPLOYEE_NOTES}); }
+  catch(e){ console.error(e); showToast('บันทึกโน้ตไม่สำเร็จ: ' + e.message, true); }
+}
+async function loadEmployeeNotes(){
+  EMPLOYEE_NOTES = await fetchEmployeeNotes() || {};
+}
+
 async function fetchEmployees(){
   if(!firebaseReady) return null;
   try{
@@ -854,10 +871,10 @@ function renderDaily(){
           ${isDone ? '✓ ทำแล้ว' : '○ ยังไม่ได้ทำ'}
         </button>
         <div class="comment-area" data-name="${name}">
-          ${rec.comment
+          ${EMPLOYEE_NOTES[name]
             ? (editable
-                ? `<div class="comment-text" data-action="edit-comment" data-name="${name}">💬 ${escapeHtml(rec.comment)}</div>`
-                : `<div class="comment-text readonly">💬 ${escapeHtml(rec.comment)}</div>`)
+                ? `<div class="comment-text" data-action="edit-comment" data-name="${name}">💬 ${escapeHtml(EMPLOYEE_NOTES[name])}</div>`
+                : `<div class="comment-text readonly">💬 ${escapeHtml(EMPLOYEE_NOTES[name])}</div>`)
             : (editable ? `<div class="comment-add" data-action="edit-comment" data-name="${name}">💬 เพิ่มโน้ต</div>` : '')
           }
         </div>
@@ -905,7 +922,10 @@ async function saveComment(name){
   const input = document.getElementById('commentInput-' + cssSafe(name));
   const value = input.value.trim();
   dayData[name].comment = value || null;
+  if(value) EMPLOYEE_NOTES[name] = value;
+  else delete EMPLOYEE_NOTES[name];
   renderDaily();
+  await saveEmployeeNotes();
   await saveDayDoc();
 }
 
@@ -1200,6 +1220,7 @@ document.getElementById('addZoneBtn').addEventListener('click', addZone);
 document.getElementById('newZoneInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') addZone(); });
 
 (async function init(){
+  await loadEmployeeNotes();
   await loadEmployees();
   await loadZones();
   const t = new Date();
