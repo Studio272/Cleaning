@@ -438,11 +438,21 @@ th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-firestore-compat.min.js"></script>
 <script>
 /* ======================================================================
-   ระบบจัดเก็บข้อมูลด้วย localStorage
-   ข้อมูลทั้งหมดจะถูกเก็บไว้ในเบราว์เซอร์เครื่องนี้เท่านั้น
+   ตั้งค่า Firebase (Firestore) สำหรับซิงก์ข้อมูลข้ามเครื่อง
 ====================================================================== */
+const firebaseConfig = {
+  apiKey: "AIzaSyDlfAU00OuyyUj9DCkWXZ81aEksvfIVY6o",
+  authDomain: "cleaning-cd56f.firebaseapp.com",
+  projectId: "cleaning-cd56f",
+  storageBucket: "cleaning-cd56f.firebasestorage.app",
+  messagingSenderId: "807094024113",
+  appId: "1:807094024113:web:6739020cafbb2b79bf6f90",
+  measurementId: "G-BFWQ9JH4J8"
+};
 
 const DEFAULT_EMPLOYEES = ["มิน","ตู่","ปอ","บีม","ปุ๊ก","บอล","บูม","เอิร์ธ","มะยม","แป้ง","กวาง","เจน"];
 const MAX_DAYS_RETAINED = 60;
@@ -463,9 +473,16 @@ const DEFAULT_ZONES = [
   "กระจกซ้าย"
 ];
 
-/* --- localStorage helper --- */
-function lsGet(key, fallback){ try{ const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fallback; }catch(e){ return fallback; } }
-function lsSet(key, value){ try{ localStorage.setItem(key, JSON.stringify(value)); }catch(e){ console.error('localStorage เต็ม', e); } }
+let db = null, firebaseReady = false;
+try{
+  if(firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY"){
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    firebaseReady = true;
+  }
+}catch(e){
+  console.error('Firebase init error', e);
+}
 
 let ZONES = [...DEFAULT_ZONES];
 let EMPLOYEES = [...DEFAULT_EMPLOYEES];
@@ -524,47 +541,22 @@ function zoneForEmployeeOnDate(name, dateStr){
   return ZONES[(empIdx + pIdx) % ZONES.length];
 }
 function cssSafe(name){ return encodeURIComponent(name).replace(/%/g, '_'); }
-function defaultDayData(){
-  const obj = {};
-  EMPLOYEES.forEach(e => obj[e] = {status:'pending', photoURL:null, time:null, comment:null});
-  return obj;
-}
-function escapeHtml(str){
-  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
 
-/* ---------------- Custom toast / confirm (native alert/confirm are blocked in the artifact sandbox) ---------------- */
-function showToast(msg, isError){
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show' + (isError ? ' error' : '');
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), isError ? 8000 : 3200);
+/* ---------------- Firestore & Data helpers ---------------- */
+async function fetchEmployeeNotes(){
+  if(!firebaseReady) return {};
+  try{
+    const snap = await db.collection('config').doc('notes').get();
+    return snap.exists ? (snap.data().notes || {}) : {};
+  }catch(e){ console.error(e); return {}; }
 }
-function showConfirm(msg){
-  return new Promise(resolve => {
-    document.getElementById('confirmMsg').textContent = msg;
-    const overlay = document.getElementById('confirmOverlay');
-    const yesBtn = document.getElementById('confirmYes');
-    const noBtn = document.getElementById('confirmNo');
-    overlay.classList.add('open');
-    function cleanup(result){
-      overlay.classList.remove('open');
-      yesBtn.removeEventListener('click', onYes);
-      noBtn.removeEventListener('click', onNo);
-      overlay.removeEventListener('click', onOverlay);
-      resolve(result);
-    }
-    function onYes(){ cleanup(true); }
-    function onNo(){ cleanup(false); }
-    function onOverlay(e){ if(e.target === overlay) cleanup(false); }
-    yesBtn.addEventListener('click', onYes);
-    noBtn.addEventListener('click', onNo);
-    overlay.addEventListener('click', onOverlay);
-  });
+async function saveEmployeeNotes(){
+  if(!firebaseReady) return;
+  try{ await db.collection('config').doc('notes').set({notes: EMPLOYEE_NOTES}); }
+  catch(e){ console.error(e); }
 }
+async function loadEmployeeNotes(){ EMPLOYEE_NOTES = await fetchEmployeeNotes(); }
 
-/* ---------------- Firestore helpers (compat API) ---------------- */
 async function fetchEmployees(){
   if(!firebaseReady) return null;
   try{
@@ -597,15 +589,7 @@ async function enforceRetention(){
     const docs = snap.docs;
     if(docs.length > MAX_DAYS_RETAINED){
       const toDelete = docs.slice(0, docs.length - MAX_DAYS_RETAINED);
-      for(const d of toDelete){
-        const records = d.data().records || {};
-        for(const name in records){
-          if(records[name] && records[name].photoURL){
-            try{ await storage.refFromURL(records[name].photoURL).delete(); }catch(e){}
-          }
-        }
-        await d.ref.delete();
-      }
+      for(const d of toDelete){ await d.ref.delete(); }
     }
   }catch(e){ console.error('เก็บกวาดข้อมูลเก่าไม่สำเร็จ', e); }
 }
@@ -621,23 +605,18 @@ async function fetchMonthRecords(year, month){
     return map;
   }catch(e){ console.error(e); return {}; }
 }
-async function uploadPhoto(dateStr, name, dataUrl){
-  const path = `photos/${dateStr}/${cssSafe(name)}.jpg`;
-  const sRef = storage.ref().child(path);
-  await sRef.putString(dataUrl, 'data_url');
-  return await sRef.getDownloadURL();
-}
 
-/* ---------------- Floor plan image (แผนผังพื้นที่) ---------------- */
-function loadFloorplan(){
-  const url = lsGet('cleaning_floorplan', null);
-  if(url){
-    document.getElementById('floorplanImg').src = url;
-  }
+async function loadFloorplan(){
+  if(!firebaseReady) return;
+  try{
+    const snap = await db.collection('config').doc('floorplan').get();
+    if(snap.exists && snap.data().url){ document.getElementById('floorplanImg').src = snap.data().url; }
+  }catch(e){ console.error('โหลดแผนผังไม่สำเร็จ', e); }
 }
-function uploadFloorplan(dataUrl){
-  lsSet('cleaning_floorplan', dataUrl);
-  return Promise.resolve(dataUrl);
+async function uploadFloorplan(dataUrl){
+  if(!firebaseReady) return dataUrl;
+  await db.collection('config').doc('floorplan').set({url: dataUrl, updatedAt: Date.now()});
+  return dataUrl;
 }
 async function handleFloorplanFile(e){
   const file = e.target.files[0];
@@ -645,12 +624,12 @@ async function handleFloorplanFile(e){
   if(!file) return;
   const btn = document.getElementById('changeFloorplanBtn');
   const originalLabel = btn.textContent;
-  btn.textContent = 'กำลังอัปโหลด...';
+  btn.textContent = 'กำลังประมวลผล...';
   btn.disabled = true;
   try{
     const dataUrl = await resizeImage(file, 1600, 0.7);
-    const url = uploadFloorplan(dataUrl);
-    document.getElementById('floorplanImg').src = url;
+    await uploadFloorplan(dataUrl);
+    document.getElementById('floorplanImg').src = dataUrl;
     showToast('เปลี่ยนรูปแผนผังเรียบร้อยแล้ว');
   }catch(err){
     console.error(err);
@@ -660,147 +639,40 @@ async function handleFloorplanFile(e){
     btn.disabled = false;
   }
 }
-function fetchZones(){
-  return lsGet('cleaning_zones', null);
+async function fetchZones(){
+  if(!firebaseReady) return null;
+  try{
+    const snap = await db.collection('config').doc('zones').get();
+    return snap.exists ? (snap.data().list || null) : null;
+  }catch(e){ console.error(e); return null; }
 }
-function saveZonesList(){
-  lsSet('cleaning_zones', ZONES);
-}
-
-/* ---------------- Employee management ---------------- */
-function loadEmployees(){
-  const list = fetchEmployees();
-  EMPLOYEES = (list && list.length) ? list : [...DEFAULT_EMPLOYEES];
-}
-function renderEmpList(){
-  const ul = document.getElementById('empList');
-  if(EMPLOYEES.length === 0){
-    ul.innerHTML = '<li class="empty">ยังไม่มีรายชื่อพนักงาน</li>';
-    return;
-  }
-  ul.innerHTML = EMPLOYEES.map(name => `
-    <li><span>${name}</span><button class="remove-emp" data-name="${name}" title="ลบ">✕</button></li>
-  `).join('');
-  ul.querySelectorAll('.remove-emp').forEach(btn => btn.addEventListener('click', () => removeEmployee(btn.dataset.name)));
-}
-async function addEmployee(){
-  const input = document.getElementById('newEmpInput');
-  const name = input.value.trim();
-  if(!name) return;
-  if(EMPLOYEES.includes(name)){ showToast('มีชื่อนี้อยู่แล้ว', true); return; }
-  EMPLOYEES.push(name);
-  input.value = '';
-  renderEmpList();
-  await saveEmployeesList();
-  if(dayData && !dayData[name]) dayData[name] = {status:'pending', photoURL:null, time:null, comment:null};
-  renderDaily();
-  refreshZonesIfActive();
-}
-async function removeEmployee(name){
-  const ok = await showConfirm(`ลบ "${name}" ออกจากรายชื่อพนักงาน?\nประวัติเก่าของ ${name} จะยังถูกเก็บไว้`);
-  if(!ok) return;
-  EMPLOYEES = EMPLOYEES.filter(n => n !== name);
-  renderEmpList();
-  await saveEmployeesList();
-  renderDaily();
-  refreshZonesIfActive();
+async function saveZonesList(){
+  if(!firebaseReady) return;
+  try{ await db.collection('config').doc('zones').set({list: ZONES}); }
+  catch(e){ console.error(e); showToast('บันทึกรายชื่อพื้นที่ไม่สำเร็จ: ' + e.message, true); }
 }
 
-/* ---------------- Zone (พื้นที่) management ---------------- */
-function loadZones(){
-  const list = fetchZones();
-  ZONES = (list && list.length) ? list : [...DEFAULT_ZONES];
-}
-function refreshZonesIfActive(){
-  if(typeof zoneYear !== 'undefined' && zoneYear !== undefined) renderZones();
-}
-function renderZoneList(){
-  const ul = document.getElementById('zoneList');
-  if(ZONES.length === 0){
-    ul.innerHTML = '<li class="empty">ยังไม่มีพื้นที่ทำความสะอาด</li>';
-    return;
-  }
-  ul.innerHTML = ZONES.map((zoneName, idx) => `
-    <li>
-      <div class="item-left">
-        <span class="order-num">${idx+1}</span>
-        <span>${escapeHtml(zoneName)}</span>
-      </div>
-      <div class="item-actions">
-        <button class="reorder-btn" data-idx="${idx}" data-dir="-1" title="ขึ้น" ${idx===0 ? 'disabled' : ''}>▲</button>
-        <button class="reorder-btn" data-idx="${idx}" data-dir="1" title="ลง" ${idx===ZONES.length-1 ? 'disabled' : ''}>▼</button>
-        <button class="remove-emp" data-idx="${idx}" title="ลบ">✕</button>
-      </div>
-    </li>
-  `).join('');
-  ul.querySelectorAll('.reorder-btn').forEach(btn => btn.addEventListener('click', () => moveZone(parseInt(btn.dataset.idx), parseInt(btn.dataset.dir))));
-  ul.querySelectorAll('.remove-emp').forEach(btn => btn.addEventListener('click', () => removeZone(parseInt(btn.dataset.idx))));
-}
-async function addZone(){
-  const input = document.getElementById('newZoneInput');
-  const name = input.value.trim();
-  if(!name) return;
-  if(ZONES.includes(name)){ showToast('มีพื้นที่นี้อยู่แล้ว', true); return; }
-  ZONES.push(name);
-  input.value = '';
-  renderZoneList();
-  await saveZonesList();
-  renderDaily();
-  refreshZonesIfActive();
-}
-async function removeZone(idx){
-  const name = ZONES[idx];
-  const ok = await showConfirm(`ลบพื้นที่ "${name}" ออกจากรายการ?\nจะมีผลกับรอบเวรตั้งแต่วันนี้เป็นต้นไป`);
-  if(!ok) return;
-  ZONES.splice(idx, 1);
-  renderZoneList();
-  await saveZonesList();
-  renderDaily();
-  refreshZonesIfActive();
-}
-async function moveZone(idx, dir){
-  const newIdx = idx + dir;
-  if(newIdx < 0 || newIdx >= ZONES.length) return;
-  [ZONES[idx], ZONES[newIdx]] = [ZONES[newIdx], ZONES[idx]];
-  renderZoneList();
-  await saveZonesList();
-  renderDaily();
-  refreshZonesIfActive();
-}
-
-/* ---------------- Daily view ---------------- */
-function loadDay(dateStr){
+/* ---------------- Render Daily ---------------- */
+async function loadDay(dateStr){
   document.getElementById('content').innerHTML = '<div class="loading-overlay">กำลังโหลดข้อมูล...</div>';
-  const records = fetchDayDoc(dateStr);
-  dayData = records || defaultDayData();
+  const records = await fetchDayDoc(dateStr);
+  dayData = records || {};
   EMPLOYEES.forEach(name => {
-    if(!dayData[name]) dayData[name] = {status:'pending', photoURL:null, time:null, comment:null};
-    if(dayData[name].comment === undefined) dayData[name].comment = null;
+    if(!dayData[name]) dayData[name] = {status:'pending', photoUploaded:false, time:null};
   });
   renderDaily();
 }
-
 function renderDaily(){
   document.getElementById('datePicker').value = currentDate;
   const content = document.getElementById('content');
   const doneCount = EMPLOYEES.filter(n => dayData[n] && dayData[n].status === 'done').length;
   const editable = isEditable(currentDate);
-  document.getElementById('progressRow').innerHTML = `
-    <div class="stamp"><div class="num">${doneCount}/${EMPLOYEES.length}</div><div class="lbl">เสร็จแล้ว</div></div>
-    <div class="progress-text">${formatThaiDate(currentDate)}</div>
-  `;
-  if(EMPLOYEES.length === 0){
-    content.innerHTML = '<div class="loading-overlay">ยังไม่มีรายชื่อพนักงาน กด "จัดการพนักงาน" ด้านบนเพื่อเพิ่มรายชื่อ</div>';
-    return;
-  }
-  let html = '';
-  if(!editable){
-    html += `<div class="lock-banner">🔒 ดูข้อมูลของวันนี้ได้อย่างเดียว แก้ไขไม่ได้เนื่องจากไม่ใช่วันปัจจุบัน — กด "วันนี้" ด้านบนเพื่อกลับไปบันทึกของวันนี้</div>`;
-  }
-  html += '<div class="grid">';
+  document.getElementById('progressRow').innerHTML = `<div class="stamp"><div class="num">${doneCount}/${EMPLOYEES.length}</div><div class="lbl">เสร็จแล้ว</div></div><div class="progress-text">${formatThaiDate(currentDate)}</div>`;
+  let html = '<div class="grid">';
   EMPLOYEES.forEach(name => {
-    const rec = dayData[name] || {status:'pending', photoURL:null, time:null};
+    const rec = dayData[name] || {status:'pending', photoUploaded:false, time:null};
     const isDone = rec.status === 'done';
+    const hasPhoto = rec.photoUploaded;
     html += `
       <div class="card">
         <div class="name">${name}</div>
@@ -913,21 +785,17 @@ async function handleFile(e, name){
   e.target.value = '';
   if(!file) return;
   if(!isEditable(currentDate)){ showToast('แก้ไขได้เฉพาะวันนี้เท่านั้น', true); return; }
-  const hint = document.querySelector(`.upload-hint[data-name="${name}"]`);
-  if(hint){ hint.classList.add('busy'); hint.textContent = 'กำลังประมวลผล...'; }
   try{
-    const dataUrl = await resizeImage(file);
-    
-    // เก็บรูปเป็น data URL ตรงๆ ใน localStorage
-    dayData[name].photoURL = dataUrl;
+    // ไม่จัดเก็บไฟล์รูปภาพ บันทึกเพียงสถานะว่าได้แนบรูปแล้วพร้อมบันทึกเวลา
+    dayData[name].photoUploaded = true;
     dayData[name].status = 'done';
-    if(!dayData[name].time) dayData[name].time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
+    dayData[name].time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
     renderDaily();
-    saveDayDoc();
-    
+    showToast(`บันทึกรูปภาพของ ${name} เรียบร้อยแล้ว`);
+    await saveDayDoc();
   }catch(err){
     console.error(err);
-    showToast('ประมวลผลรูปไม่สำเร็จ: ' + err.message, true);
+    showToast('บันทึกไม่สำเร็จ: ' + err.message, true);
     renderDaily();
   }
 }
@@ -938,11 +806,11 @@ function openLightbox(src){
 }
 
 /* ---------------- Monthly view ---------------- */
-function loadMonth(year, month){
+async function loadMonth(year, month){
   calYear = year; calMonth = month;
   document.getElementById('monthLabel').textContent = thaiMonthYear(year, month);
   document.getElementById('calendar').innerHTML = '<div class="loading-overlay">กำลังโหลดข้อมูล...</div>';
-  const monthRecords = fetchMonthRecords(year, month);
+  const monthRecords = await fetchMonthRecords(year, month);
   renderCalendar(year, month, monthRecords);
   renderSummary(year, month, monthRecords);
 }
@@ -1142,13 +1010,13 @@ document.getElementById('manageZonesModal').addEventListener('click', (e) => { i
 document.getElementById('addZoneBtn').addEventListener('click', addZone);
 document.getElementById('newZoneInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') addZone(); });
 
-(function init(){
-  loadEmployeeNotes();
-  loadEmployees();
-  loadZones();
+(async function init(){
+  await loadEmployeeNotes();
+  await loadEmployees();
+  await loadZones();
   const t = new Date();
   zoneYear = t.getFullYear(); zoneMonth = t.getMonth(); zoneHalf = t.getDate() <= 15 ? 0 : 1;
-  loadDay(currentDate);
+  await loadDay(currentDate);
   loadFloorplan();
 })();
 </script>

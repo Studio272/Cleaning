@@ -437,11 +437,21 @@ th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-firestore-compat.min.js"></script>
 <script>
 /* ======================================================================
-   ระบบจัดเก็บข้อมูลด้วย localStorage
-   ข้อมูลทั้งหมดจะถูกเก็บไว้ในเบราว์เซอร์เครื่องนี้เท่านั้น
+   ตั้งค่า Firebase (Firestore) สำหรับซิงก์ข้อมูลข้ามเครื่อง
 ====================================================================== */
+const firebaseConfig = {
+  apiKey: "AIzaSyDlfAU00OuyyUj9DCkWXZ81aEksvfIVY6o",
+  authDomain: "cleaning-cd56f.firebaseapp.com",
+  projectId: "cleaning-cd56f",
+  storageBucket: "cleaning-cd56f.firebasestorage.app",
+  messagingSenderId: "807094024113",
+  appId: "1:807094024113:web:6739020cafbb2b79bf6f90",
+  measurementId: "G-BFWQ9JH4J8"
+};
 
 const DEFAULT_EMPLOYEES = ["มิน","ตู่","ปอ","บีม","ปุ๊ก","บอล","บูม","เอิร์ธ","มะยม","แป้ง","กวาง","เจน"];
 const MAX_DAYS_RETAINED = 60;
@@ -462,9 +472,16 @@ const DEFAULT_ZONES = [
   "กระจกซ้าย"
 ];
 
-/* --- localStorage helper --- */
-function lsGet(key, fallback){ try{ const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fallback; }catch(e){ return fallback; } }
-function lsSet(key, value){ try{ localStorage.setItem(key, JSON.stringify(value)); }catch(e){ console.error('localStorage เต็ม', e); } }
+let db = null, firebaseReady = false;
+try{
+  if(firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY"){
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    firebaseReady = true;
+  }
+}catch(e){
+  console.error('Firebase init error', e);
+}
 
 let ZONES = [...DEFAULT_ZONES];
 let EMPLOYEES = [...DEFAULT_EMPLOYEES];
@@ -564,66 +581,75 @@ function showConfirm(msg){
   });
 }
 
-/* ---------------- localStorage helpers (แทน Firestore/Storage) ---------------- */
-function fetchEmployeeNotes(){
-  return lsGet('cleaning_notes', {});
+/* ---------------- Firestore & Data helpers ---------------- */
+async function fetchEmployeeNotes(){
+  if(!firebaseReady) return {};
+  try{
+    const snap = await db.collection('config').doc('notes').get();
+    return snap.exists ? (snap.data().notes || {}) : {};
+  }catch(e){ console.error(e); return {}; }
 }
-function saveEmployeeNotes(){
-  lsSet('cleaning_notes', EMPLOYEE_NOTES);
+async function saveEmployeeNotes(){
+  if(!firebaseReady) return;
+  try{ await db.collection('config').doc('notes').set({notes: EMPLOYEE_NOTES}); }
+  catch(e){ console.error(e); }
 }
-function loadEmployeeNotes(){
-  EMPLOYEE_NOTES = fetchEmployeeNotes() || {};
+async function loadEmployeeNotes(){
+  EMPLOYEE_NOTES = await fetchEmployeeNotes();
 }
 
-function fetchEmployees(){
-  return lsGet('cleaning_employees', null);
+async function fetchEmployees(){
+  if(!firebaseReady) return null;
+  try{
+    const snap = await db.collection('config').doc('employees').get();
+    return snap.exists ? (snap.data().list || null) : null;
+  }catch(e){ console.error(e); return null; }
 }
-function saveEmployeesList(){
-  lsSet('cleaning_employees', EMPLOYEES);
+async function saveEmployeesList(){
+  if(!firebaseReady) return;
+  try{ await db.collection('config').doc('employees').set({list: EMPLOYEES}); }
+  catch(e){ console.error(e); showToast('บันทึกรายชื่อพนักงานไม่สำเร็จ: ' + e.message, true); }
 }
-function fetchDayDoc(dateStr){
-  const allDays = lsGet('cleaning_days', {});
-  return allDays[dateStr] ? (allDays[dateStr].records || null) : null;
+async function fetchDayDoc(dateStr){
+  if(!firebaseReady) return null;
+  try{
+    const snap = await db.collection('days').doc(dateStr).get();
+    return snap.exists ? (snap.data().records || null) : null;
+  }catch(e){ console.error(e); return null; }
 }
-function saveDayDoc(){
-  const allDays = lsGet('cleaning_days', {});
-  allDays[currentDate] = { date: currentDate, records: dayData };
-  // เก็บกวาดข้อมูลเก่า
-  const keys = Object.keys(allDays).sort();
-  if(keys.length > MAX_DAYS_RETAINED){
-    const toDelete = keys.slice(0, keys.length - MAX_DAYS_RETAINED);
-    toDelete.forEach(k => delete allDays[k]);
-  }
-  lsSet('cleaning_days', allDays);
+async function saveDayDoc(){
+  if(!firebaseReady) return;
+  try{
+    await db.collection('days').doc(currentDate).set({date: currentDate, records: dayData});
+  }catch(e){ console.error(e); showToast('บันทึกข้อมูลไม่สำเร็จ: ' + e.message, true); }
 }
-function fetchMonthRecords(year, month){
-  const allDays = lsGet('cleaning_days', {});
+async function fetchMonthRecords(year, month){
+  if(!firebaseReady) return {};
   const first = `${year}-${String(month+1).padStart(2,'0')}-01`;
   const lastDay = new Date(year, month+1, 0).getDate();
   const last = `${year}-${String(month+1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-  const map = {};
-  Object.keys(allDays).forEach(dateStr => {
-    if(dateStr >= first && dateStr <= last){
-      map[dateStr] = allDays[dateStr].records || {};
-    }
-  });
-  return map;
-}
-// รูปภาพเก็บเป็น data URL ตรงใน dayData.photoURL เลย (ไม่ต้อง upload)
-function uploadPhoto(dateStr, name, dataUrl){
-  return Promise.resolve(dataUrl);
+  try{
+    const snap = await db.collection('days').where('date','>=',first).where('date','<=',last).get();
+    const map = {};
+    snap.forEach(d => map[d.id] = d.data().records || {});
+    return map;
+  }catch(e){ console.error(e); return {}; }
 }
 
 /* ---------------- Floor plan image (แผนผังพื้นที่) ---------------- */
-function loadFloorplan(){
-  const url = lsGet('cleaning_floorplan', null);
-  if(url){
-    document.getElementById('floorplanImg').src = url;
-  }
+async function loadFloorplan(){
+  if(!firebaseReady) return;
+  try{
+    const snap = await db.collection('config').doc('floorplan').get();
+    if(snap.exists && snap.data().url){
+      document.getElementById('floorplanImg').src = snap.data().url;
+    }
+  }catch(e){ console.error('โหลดแผนผังไม่สำเร็จ', e); }
 }
-function uploadFloorplan(dataUrl){
-  lsSet('cleaning_floorplan', dataUrl);
-  return Promise.resolve(dataUrl);
+async function uploadFloorplan(dataUrl){
+  if(!firebaseReady) return dataUrl;
+  await db.collection('config').doc('floorplan').set({url: dataUrl, updatedAt: Date.now()});
+  return dataUrl;
 }
 async function handleFloorplanFile(e){
   const file = e.target.files[0];
@@ -631,12 +657,12 @@ async function handleFloorplanFile(e){
   if(!file) return;
   const btn = document.getElementById('changeFloorplanBtn');
   const originalLabel = btn.textContent;
-  btn.textContent = 'กำลังอัปโหลด...';
+  btn.textContent = 'กำลังประมวลผล...';
   btn.disabled = true;
   try{
     const dataUrl = await resizeImage(file, 1600, 0.7);
-    const url = uploadFloorplan(dataUrl);
-    document.getElementById('floorplanImg').src = url;
+    await uploadFloorplan(dataUrl);
+    document.getElementById('floorplanImg').src = dataUrl;
     showToast('เปลี่ยนรูปแผนผังเรียบร้อยแล้ว');
   }catch(err){
     console.error(err);
@@ -646,16 +672,22 @@ async function handleFloorplanFile(e){
     btn.disabled = false;
   }
 }
-function fetchZones(){
-  return lsGet('cleaning_zones', null);
+async function fetchZones(){
+  if(!firebaseReady) return null;
+  try{
+    const snap = await db.collection('config').doc('zones').get();
+    return snap.exists ? (snap.data().list || null) : null;
+  }catch(e){ console.error(e); return null; }
 }
-function saveZonesList(){
-  lsSet('cleaning_zones', ZONES);
+async function saveZonesList(){
+  if(!firebaseReady) return;
+  try{ await db.collection('config').doc('zones').set({list: ZONES}); }
+  catch(e){ console.error(e); showToast('บันทึกรายชื่อพื้นที่ไม่สำเร็จ: ' + e.message, true); }
 }
 
 /* ---------------- Employee management ---------------- */
-function loadEmployees(){
-  const list = fetchEmployees();
+async function loadEmployees(){
+  const list = await fetchEmployees();
   EMPLOYEES = (list && list.length) ? list : [...DEFAULT_EMPLOYEES];
 }
 function renderEmpList(){
@@ -693,8 +725,8 @@ async function removeEmployee(name){
 }
 
 /* ---------------- Zone (พื้นที่) management ---------------- */
-function loadZones(){
-  const list = fetchZones();
+async function loadZones(){
+  const list = await fetchZones();
   ZONES = (list && list.length) ? list : [...DEFAULT_ZONES];
 }
 function refreshZonesIfActive(){
@@ -755,12 +787,12 @@ async function moveZone(idx, dir){
 }
 
 /* ---------------- Daily view ---------------- */
-function loadDay(dateStr){
+async function loadDay(dateStr){
   document.getElementById('content').innerHTML = '<div class="loading-overlay">กำลังโหลดข้อมูล...</div>';
-  const records = fetchDayDoc(dateStr);
+  const records = await fetchDayDoc(dateStr);
   dayData = records || defaultDayData();
   EMPLOYEES.forEach(name => {
-    if(!dayData[name]) dayData[name] = {status:'pending', photoURL:null, time:null, comment:null};
+    if(!dayData[name]) dayData[name] = {status:'pending', photoUploaded:false, time:null, comment:null};
     if(dayData[name].comment === undefined) dayData[name].comment = null;
   });
   renderDaily();
@@ -785,8 +817,9 @@ function renderDaily(){
   }
   html += '<div class="grid">';
   EMPLOYEES.forEach(name => {
-    const rec = dayData[name] || {status:'pending', photoURL:null, time:null};
+    const rec = dayData[name] || {status:'pending', photoUploaded:false, time:null};
     const isDone = rec.status === 'done';
+    const hasPhoto = rec.photoUploaded || rec.photoURL; // รองรับประวัติเก่าถ้ามี
     html += `
       <div class="card">
         <div class="name">${name}</div>
@@ -803,12 +836,11 @@ function renderDaily(){
           }
         </div>
         <div class="photo-area">
-          ${rec.photoURL
-            ? `<div class="thumb-wrap" data-name="${name}" data-action="view">
-                 <img src="${rec.photoURL}" alt="รูปความสะอาด ${name}">
-                 ${rec.time ? `<div class="thumb-time">${rec.time}</div>` : ''}
+          ${hasPhoto
+            ? `<div class="comment-text readonly" style="background:#DCEEE5; border-color:#4A9B7F; color:#2B3A4A; text-align:center;">
+                 📷 บันทึกรูปภาพเรียบร้อยแล้ว${rec.time ? `<br><small style="color:#5A6B78;">(เวลา ${rec.time} น.)</small>` : ''}
                </div>
-               ${editable ? `<div class="upload-hint" data-name="${name}" data-action="upload">เปลี่ยนรูป</div>` : ''}`
+               ${editable ? `<div class="upload-hint" data-name="${name}" data-action="upload" style="margin-top:4px;">เปลี่ยนรูปภาพ</div>` : ''}`
             : (isDone && editable ? `<div class="upload-hint" data-name="${name}" data-action="upload">📷 แนบรูปตอนทำเสร็จ</div>` : '')
           }
         </div>
@@ -842,18 +874,18 @@ function openCommentEditor(name){
   area.querySelector('textarea').focus();
 }
 
-function saveComment(name){
+async function saveComment(name){
   const input = document.getElementById('commentInput-' + cssSafe(name));
   const value = input.value.trim();
   dayData[name].comment = value || null;
   if(value) EMPLOYEE_NOTES[name] = value;
   else delete EMPLOYEE_NOTES[name];
   renderDaily();
-  saveEmployeeNotes();
-  saveDayDoc();
+  await saveEmployeeNotes();
+  await saveDayDoc();
 }
 
-function toggleStatus(name){
+async function toggleStatus(name){
   if(!isEditable(currentDate)){ showToast('แก้ไขได้เฉพาะวันนี้เท่านั้น', true); return; }
   const rec = dayData[name];
   const btn = document.querySelector(`.status-btn[data-name="${name}"]`);
@@ -862,14 +894,15 @@ function toggleStatus(name){
     rec.time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
     renderDaily();
     if(btn) btn.disabled = true;
-    saveDayDoc();
+    await saveDayDoc();
     document.getElementById('file-' + cssSafe(name)).click();
   } else {
     rec.status = 'pending';
+    rec.photoUploaded = false;
     rec.photoURL = null;
     rec.time = null;
     renderDaily();
-    saveDayDoc();
+    await saveDayDoc();
   }
 }
 
@@ -902,21 +935,17 @@ async function handleFile(e, name){
   e.target.value = '';
   if(!file) return;
   if(!isEditable(currentDate)){ showToast('แก้ไขได้เฉพาะวันนี้เท่านั้น', true); return; }
-  const hint = document.querySelector(`.upload-hint[data-name="${name}"]`);
-  if(hint){ hint.classList.add('busy'); hint.textContent = 'กำลังประมวลผล...'; }
   try{
-    const dataUrl = await resizeImage(file);
-    
-    // เก็บรูปเป็น data URL ตรงๆ ใน localStorage
-    dayData[name].photoURL = dataUrl;
+    // ไม่จัดเก็บไฟล์รูปภาพ บันทึกเพียงสถานะว่าได้แนบรูปแล้วพร้อมบันทึกเวลา
+    dayData[name].photoUploaded = true;
     dayData[name].status = 'done';
-    if(!dayData[name].time) dayData[name].time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
+    dayData[name].time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
     renderDaily();
-    saveDayDoc();
-    
+    showToast(`บันทึกรูปภาพของ ${name} เรียบร้อยแล้ว`);
+    await saveDayDoc();
   }catch(err){
     console.error(err);
-    showToast('ประมวลผลรูปไม่สำเร็จ: ' + err.message, true);
+    showToast('บันทึกไม่สำเร็จ: ' + err.message, true);
     renderDaily();
   }
 }
@@ -927,11 +956,11 @@ function openLightbox(src){
 }
 
 /* ---------------- Monthly view ---------------- */
-function loadMonth(year, month){
+async function loadMonth(year, month){
   calYear = year; calMonth = month;
   document.getElementById('monthLabel').textContent = thaiMonthYear(year, month);
   document.getElementById('calendar').innerHTML = '<div class="loading-overlay">กำลังโหลดข้อมูล...</div>';
-  const monthRecords = fetchMonthRecords(year, month);
+  const monthRecords = await fetchMonthRecords(year, month);
   renderCalendar(year, month, monthRecords);
   renderSummary(year, month, monthRecords);
 }
@@ -1131,13 +1160,13 @@ document.getElementById('manageZonesModal').addEventListener('click', (e) => { i
 document.getElementById('addZoneBtn').addEventListener('click', addZone);
 document.getElementById('newZoneInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') addZone(); });
 
-(function init(){
-  loadEmployeeNotes();
-  loadEmployees();
-  loadZones();
+(async function init(){
+  await loadEmployeeNotes();
+  await loadEmployees();
+  await loadZones();
   const t = new Date();
   zoneYear = t.getFullYear(); zoneMonth = t.getMonth(); zoneHalf = t.getDate() <= 15 ? 0 : 1;
-  loadDay(currentDate);
+  await loadDay(currentDate);
   loadFloorplan();
 })();
 </script>
