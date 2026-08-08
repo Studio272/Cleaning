@@ -325,15 +325,7 @@ th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
 <body>
 <div class="wrap">
 
-  <div class="setup-banner" id="setupBanner">
-    <b>⚠ ยังไม่ได้ตั้งค่า Firebase</b><br>
-    ต้องใส่ค่า config ของโปรเจกต์ Firebase ของคุณเองในไฟล์นี้ก่อนใช้งานได้:<br>
-    1. สร้างโปรเจกต์ที่ <code>console.firebase.google.com</code><br>
-    2. เปิดใช้ <b>Firestore Database</b> และ <b>Storage</b><br>
-    3. เพิ่ม Web App เพื่อรับค่า config<br>
-    4. เปิดไฟล์นี้แล้วแก้ตัวแปร <code>firebaseConfig</code> ใกล้ด้านล่างของไฟล์ ใส่ค่าที่ได้ลงไป<br>
-    5. ตั้งกฎความปลอดภัยของ Firestore/Storage ให้เหมาะสม (ดูคำแนะนำท้ายข้อความ)
-  </div>
+
 
   <div class="header">
     <div class="tape"></div>
@@ -446,24 +438,11 @@ th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-app-compat.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-firestore-compat.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-storage-compat.min.js"></script>
 <script>
 /* ======================================================================
-   ตั้งค่า Firebase ของคุณตรงนี้
-   ไปเอาค่านี้จาก Firebase Console > Project settings > General > Your apps
+   ระบบจัดเก็บข้อมูลด้วย localStorage
+   ข้อมูลทั้งหมดจะถูกเก็บไว้ในเบราว์เซอร์เครื่องนี้เท่านั้น
 ====================================================================== */
-const firebaseConfig = {
-  apiKey: "AIzaSyDlfAU00OuyyUj9DCkWXZ81aEksvfIVY6o",
-  authDomain: "cleaning-cd56f.firebaseapp.com",
-  projectId: "cleaning-cd56f",
-  storageBucket: "cleaning-cd56f.firebasestorage.app",
-  messagingSenderId: "807094024113",
-  appId: "1:807094024113:web:6739020cafbb2b79bf6f90",
-  measurementId: "G-BFWQ9JH4J8"
-};
-/* ====================================================================== */
 
 const DEFAULT_EMPLOYEES = ["มิน","ตู่","ปอ","บีม","ปุ๊ก","บอล","บูม","เอิร์ธ","มะยม","แป้ง","กวาง","เจน"];
 const MAX_DAYS_RETAINED = 60;
@@ -484,20 +463,9 @@ const DEFAULT_ZONES = [
   "กระจกซ้าย"
 ];
 
-let db = null, storage = null, firebaseReady = false;
-try{
-  if(firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY"){
-    firebase.initializeApp(firebaseConfig);
-    db = firebase.firestore();
-    storage = firebase.storage();
-    firebaseReady = true;
-  } else {
-    document.getElementById('setupBanner').classList.add('show');
-  }
-}catch(e){
-  console.error('Firebase init error', e);
-  document.getElementById('setupBanner').classList.add('show');
-}
+/* --- localStorage helper --- */
+function lsGet(key, fallback){ try{ const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fallback; }catch(e){ return fallback; } }
+function lsSet(key, value){ try{ localStorage.setItem(key, JSON.stringify(value)); }catch(e){ console.error('localStorage เต็ม', e); } }
 
 let ZONES = [...DEFAULT_ZONES];
 let EMPLOYEES = [...DEFAULT_EMPLOYEES];
@@ -661,34 +629,27 @@ async function uploadPhoto(dateStr, name, dataUrl){
 }
 
 /* ---------------- Floor plan image (แผนผังพื้นที่) ---------------- */
-async function loadFloorplan(){
-  if(!firebaseReady) return;
-  try{
-    const snap = await db.collection('config').doc('floorplan').get();
-    if(snap.exists && snap.data().url){
-      document.getElementById('floorplanImg').src = snap.data().url;
-    }
-  }catch(e){ console.error('โหลดแผนผังไม่สำเร็จ', e); }
+function loadFloorplan(){
+  const url = lsGet('cleaning_floorplan', null);
+  if(url){
+    document.getElementById('floorplanImg').src = url;
+  }
 }
-async function uploadFloorplan(dataUrl){
-  const sRef = storage.ref().child('floorplan/current.jpg');
-  await sRef.putString(dataUrl, 'data_url');
-  const url = await sRef.getDownloadURL();
-  await db.collection('config').doc('floorplan').set({url: url, updatedAt: Date.now()});
-  return url;
+function uploadFloorplan(dataUrl){
+  lsSet('cleaning_floorplan', dataUrl);
+  return Promise.resolve(dataUrl);
 }
 async function handleFloorplanFile(e){
   const file = e.target.files[0];
   e.target.value = '';
   if(!file) return;
-  if(!firebaseReady){ showToast('ยังไม่ได้ตั้งค่า Firebase — ดูคำแนะนำด้านบนของหน้า', true); return; }
   const btn = document.getElementById('changeFloorplanBtn');
   const originalLabel = btn.textContent;
   btn.textContent = 'กำลังอัปโหลด...';
   btn.disabled = true;
   try{
     const dataUrl = await resizeImage(file, 1600, 0.7);
-    const url = await uploadFloorplan(dataUrl);
+    const url = uploadFloorplan(dataUrl);
     document.getElementById('floorplanImg').src = url;
     showToast('เปลี่ยนรูปแผนผังเรียบร้อยแล้ว');
   }catch(err){
@@ -699,22 +660,16 @@ async function handleFloorplanFile(e){
     btn.disabled = false;
   }
 }
-async function fetchZones(){
-  if(!firebaseReady) return null;
-  try{
-    const snap = await db.collection('config').doc('zones').get();
-    return snap.exists ? (snap.data().list || null) : null;
-  }catch(e){ console.error(e); return null; }
+function fetchZones(){
+  return lsGet('cleaning_zones', null);
 }
-async function saveZonesList(){
-  if(!firebaseReady) return;
-  try{ await db.collection('config').doc('zones').set({list: ZONES}); }
-  catch(e){ console.error(e); showToast('บันทึกรายชื่อพื้นที่ไม่สำเร็จ: ' + e.message, true); }
+function saveZonesList(){
+  lsSet('cleaning_zones', ZONES);
 }
 
 /* ---------------- Employee management ---------------- */
-async function loadEmployees(){
-  const list = await fetchEmployees();
+function loadEmployees(){
+  const list = fetchEmployees();
   EMPLOYEES = (list && list.length) ? list : [...DEFAULT_EMPLOYEES];
 }
 function renderEmpList(){
@@ -752,8 +707,8 @@ async function removeEmployee(name){
 }
 
 /* ---------------- Zone (พื้นที่) management ---------------- */
-async function loadZones(){
-  const list = await fetchZones();
+function loadZones(){
+  const list = fetchZones();
   ZONES = (list && list.length) ? list : [...DEFAULT_ZONES];
 }
 function refreshZonesIfActive(){
@@ -814,9 +769,9 @@ async function moveZone(idx, dir){
 }
 
 /* ---------------- Daily view ---------------- */
-async function loadDay(dateStr){
+function loadDay(dateStr){
   document.getElementById('content').innerHTML = '<div class="loading-overlay">กำลังโหลดข้อมูล...</div>';
-  const records = await fetchDayDoc(dateStr);
+  const records = fetchDayDoc(dateStr);
   dayData = records || defaultDayData();
   EMPLOYEES.forEach(name => {
     if(!dayData[name]) dayData[name] = {status:'pending', photoURL:null, time:null, comment:null};
@@ -909,7 +864,7 @@ async function saveComment(name){
   await saveDayDoc();
 }
 
-async function toggleStatus(name){
+function toggleStatus(name){
   if(!isEditable(currentDate)){ showToast('แก้ไขได้เฉพาะวันนี้เท่านั้น', true); return; }
   const rec = dayData[name];
   const btn = document.querySelector(`.status-btn[data-name="${name}"]`);
@@ -918,15 +873,14 @@ async function toggleStatus(name){
     rec.time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
     renderDaily();
     if(btn) btn.disabled = true;
-    await saveDayDoc();
+    saveDayDoc();
     document.getElementById('file-' + cssSafe(name)).click();
   } else {
-    if(rec.photoURL){ try{ await storage.refFromURL(rec.photoURL).delete(); }catch(e){} }
     rec.status = 'pending';
     rec.photoURL = null;
     rec.time = null;
     renderDaily();
-    await saveDayDoc();
+    saveDayDoc();
   }
 }
 
@@ -959,28 +913,17 @@ async function handleFile(e, name){
   e.target.value = '';
   if(!file) return;
   if(!isEditable(currentDate)){ showToast('แก้ไขได้เฉพาะวันนี้เท่านั้น', true); return; }
-  if(!firebaseReady){ showToast('ยังไม่ได้ตั้งค่า Firebase — ดูคำแนะนำด้านบนของหน้า', true); return; }
   const hint = document.querySelector(`.upload-hint[data-name="${name}"]`);
   if(hint){ hint.classList.add('busy'); hint.textContent = 'กำลังประมวลผล...'; }
   try{
     const dataUrl = await resizeImage(file);
-    const oldUrl = dayData[name].photoURL;
     
-    // อัพเดต UI ทันที (Optimistic UI)
-    dayData[name].photoURL = dataUrl; // ใช้รูป local แสดงผลไปก่อน
+    // เก็บรูปเป็น data URL ตรงๆ ใน localStorage
+    dayData[name].photoURL = dataUrl;
     dayData[name].status = 'done';
     if(!dayData[name].time) dayData[name].time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
     renderDaily();
-    
-    // ปล่อยให้อัพโหลดทำงานเบื้องหลัง
-    uploadPhoto(currentDate, name, dataUrl).then(async (url) => {
-      if(oldUrl && oldUrl !== url){ try{ await storage.refFromURL(oldUrl).delete(); }catch(err){} }
-      dayData[name].photoURL = url; // เปลี่ยนเป็นลิงก์จริงจาก server
-      await saveDayDoc();
-    }).catch(err => {
-      console.error('Background upload failed', err);
-      // ไม่ต้องแจ้งผู้ใช้เพื่อไม่ให้กวนใจตามโจทย์ แต่ log ไว้เผื่อดูทีหลัง
-    });
+    saveDayDoc();
     
   }catch(err){
     console.error(err);
@@ -995,11 +938,11 @@ function openLightbox(src){
 }
 
 /* ---------------- Monthly view ---------------- */
-async function loadMonth(year, month){
+function loadMonth(year, month){
   calYear = year; calMonth = month;
   document.getElementById('monthLabel').textContent = thaiMonthYear(year, month);
   document.getElementById('calendar').innerHTML = '<div class="loading-overlay">กำลังโหลดข้อมูล...</div>';
-  const monthRecords = await fetchMonthRecords(year, month);
+  const monthRecords = fetchMonthRecords(year, month);
   renderCalendar(year, month, monthRecords);
   renderSummary(year, month, monthRecords);
 }
@@ -1199,12 +1142,13 @@ document.getElementById('manageZonesModal').addEventListener('click', (e) => { i
 document.getElementById('addZoneBtn').addEventListener('click', addZone);
 document.getElementById('newZoneInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') addZone(); });
 
-(async function init(){
-  await loadEmployees();
-  await loadZones();
+(function init(){
+  loadEmployeeNotes();
+  loadEmployees();
+  loadZones();
   const t = new Date();
   zoneYear = t.getFullYear(); zoneMonth = t.getMonth(); zoneHalf = t.getDate() <= 15 ? 0 : 1;
-  await loadDay(currentDate);
+  loadDay(currentDate);
   loadFloorplan();
 })();
 </script>
