@@ -409,6 +409,18 @@ th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
   </div>
 </div>
 
+<div class="modal-overlay" id="adminPassOverlay">
+  <div class="modal confirm-box">
+    <div class="confirm-msg">🔒 กรุณาใส่รหัสผ่านสำหรับผู้ดูแล</div>
+    <input type="password" id="adminPassInput" class="comment-input" style="margin-bottom:12px;" placeholder="รหัสผ่าน" autocomplete="off">
+    <div id="adminPassError" style="color:var(--danger); font-size:12px; margin:-6px 0 10px; display:none;">รหัสผ่านไม่ถูกต้อง</div>
+    <div class="confirm-actions">
+      <button id="adminPassCancel" class="confirm-btn no">ยกเลิก</button>
+      <button id="adminPassSubmit" class="confirm-btn yes">ยืนยัน</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="manageModal">
   <div class="modal">
     <button class="modal-close" id="manageClose">✕</button>
@@ -478,6 +490,11 @@ try{
     firebase.initializeApp(firebaseConfig);
     db = firebase.firestore();
     firebaseReady = true;
+    // เปิดโหมด offline persistence: ถ้าเน็ตหลุด/ช้า ระบบจะจำคำสั่งบันทึกไว้ในเครื่อง
+    // แล้วส่งขึ้น Firestore อัตโนมัติทันทีที่เน็ตกลับมา แทนที่จะบันทึกไม่สำเร็จเงียบๆ
+    db.enablePersistence({ synchronizeTabs: true }).catch(err => {
+      console.warn('Offline persistence ไม่สามารถเปิดได้:', err.code);
+    });
   }
 }catch(e){
   console.error('Firebase init error', e);
@@ -581,6 +598,55 @@ function showConfirm(msg){
   });
 }
 
+/* ---------------- Admin password gate (เวรพื้นที่ / จัดการพื้นที่ / จัดการพนักงาน) ---------------- */
+const ADMIN_PASSWORD = "admin1234";
+let adminUnlocked = false; // ปลดล็อกแล้วจะไม่ถามซ้ำจนกว่าจะรีเฟรชหน้า
+
+function askAdminPassword(){
+  return new Promise(resolve => {
+    const overlay = document.getElementById('adminPassOverlay');
+    const input = document.getElementById('adminPassInput');
+    const errorEl = document.getElementById('adminPassError');
+    const submitBtn = document.getElementById('adminPassSubmit');
+    const cancelBtn = document.getElementById('adminPassCancel');
+    input.value = '';
+    errorEl.style.display = 'none';
+    overlay.classList.add('open');
+    setTimeout(() => input.focus(), 50);
+    function cleanup(result){
+      overlay.classList.remove('open');
+      submitBtn.removeEventListener('click', onSubmit);
+      cancelBtn.removeEventListener('click', onCancel);
+      overlay.removeEventListener('click', onOverlay);
+      input.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onSubmit(){
+      if(input.value === ADMIN_PASSWORD){
+        cleanup(true);
+      } else {
+        errorEl.style.display = 'block';
+        input.value = '';
+        input.focus();
+      }
+    }
+    function onCancel(){ cleanup(false); }
+    function onOverlay(e){ if(e.target === overlay) cleanup(false); }
+    function onKeydown(e){ if(e.key === 'Enter') onSubmit(); }
+    submitBtn.addEventListener('click', onSubmit);
+    cancelBtn.addEventListener('click', onCancel);
+    overlay.addEventListener('click', onOverlay);
+    input.addEventListener('keydown', onKeydown);
+  });
+}
+
+// เรียกก่อนเข้าถึงส่วนที่ล็อกไว้ — ถ้ายังไม่เคยปลดล็อกในเซสชันนี้ จะถามรหัสผ่านก่อน
+async function requireAdmin(action){
+  if(adminUnlocked){ action(); return; }
+  const ok = await askAdminPassword();
+  if(ok){ adminUnlocked = true; action(); }
+}
+
 /* ---------------- Firestore & Data helpers ---------------- */
 async function fetchEmployeeNotes(){
   if(!firebaseReady) return {};
@@ -617,11 +683,24 @@ async function fetchDayDoc(dateStr){
     return snap.exists ? (snap.data().records || null) : null;
   }catch(e){ console.error(e); return null; }
 }
-async function saveDayDoc(){
+async function saveDayDoc(name){
   if(!firebaseReady) return;
   try{
-    await db.collection('days').doc(currentDate).set({date: currentDate, records: dayData});
-  }catch(e){ console.error(e); showToast('บันทึกข้อมูลไม่สำเร็จ: ' + e.message, true); }
+    if(name){
+      // บันทึกเฉพาะข้อมูลของพนักงานคนที่เปลี่ยน (merge) ไม่แตะข้อมูลของคนอื่น
+      // เดิมใช้ .set() เขียนทับทั้ง object ทำให้ถ้ามีคนอื่นกด "ทำแล้ว" ในช่วงเวลาใกล้กัน
+      // ข้อมูลของคนที่กดก่อนจะถูกข้อมูลเก่าที่ค้างอยู่ในเครื่องของอีกคนเขียนทับหายไป
+      await db.collection('days').doc(currentDate).set({
+        date: currentDate,
+        records: { [name]: dayData[name] }
+      }, { merge: true });
+    } else {
+      await db.collection('days').doc(currentDate).set({date: currentDate, records: dayData}, { merge: true });
+    }
+  }catch(e){
+    console.error(e);
+    showToast('บันทึกข้อมูลไม่สำเร็จ: ' + e.message, true);
+  }
 }
 async function fetchMonthRecords(year, month){
   if(!firebaseReady) return {};
@@ -882,7 +961,7 @@ async function saveComment(name){
   else delete EMPLOYEE_NOTES[name];
   renderDaily();
   await saveEmployeeNotes();
-  await saveDayDoc();
+  await saveDayDoc(name);
 }
 
 async function toggleStatus(name){
@@ -894,7 +973,8 @@ async function toggleStatus(name){
     rec.time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
     renderDaily();
     if(btn) btn.disabled = true;
-    await saveDayDoc();
+    await saveDayDoc(name);
+    if(btn) btn.disabled = false;
     document.getElementById('file-' + cssSafe(name)).click();
   } else {
     rec.status = 'pending';
@@ -902,7 +982,7 @@ async function toggleStatus(name){
     rec.photoURL = null;
     rec.time = null;
     renderDaily();
-    await saveDayDoc();
+    await saveDayDoc(name);
   }
 }
 
@@ -942,7 +1022,7 @@ async function handleFile(e, name){
     dayData[name].time = new Date().toLocaleTimeString('th-TH', {hour:'2-digit', minute:'2-digit'});
     renderDaily();
     showToast(`บันทึกรูปภาพของ ${name} เรียบร้อยแล้ว`);
-    await saveDayDoc();
+    await saveDayDoc(name);
   }catch(err){
     console.error(err);
     showToast('บันทึกไม่สำเร็จ: ' + err.message, true);
@@ -1110,12 +1190,14 @@ document.getElementById('tabMonthly').addEventListener('click', () => {
   loadMonth(d.getFullYear(), d.getMonth());
 });
 document.getElementById('tabZones').addEventListener('click', () => {
-  switchTab('zones');
-  if(zoneYear === undefined){
-    const t = new Date();
-    zoneYear = t.getFullYear(); zoneMonth = t.getMonth(); zoneHalf = t.getDate() <= 15 ? 0 : 1;
-  }
-  renderZones();
+  requireAdmin(() => {
+    switchTab('zones');
+    if(zoneYear === undefined){
+      const t = new Date();
+      zoneYear = t.getFullYear(); zoneMonth = t.getMonth(); zoneHalf = t.getDate() <= 15 ? 0 : 1;
+    }
+    renderZones();
+  });
 });
 
 document.getElementById('prevDay').addEventListener('click', () => { currentDate = addDays(currentDate,-1); loadDay(currentDate); });
@@ -1148,13 +1230,23 @@ document.getElementById('changeFloorplanBtn').addEventListener('click', () => do
 document.getElementById('floorplanFileInput').addEventListener('change', handleFloorplanFile);
 document.getElementById('lightbox').addEventListener('click', (e) => { if(e.target.id === 'lightbox') e.target.classList.remove('open'); });
 
-document.getElementById('manageBtn').addEventListener('click', () => { renderEmpList(); document.getElementById('manageModal').classList.add('open'); });
+document.getElementById('manageBtn').addEventListener('click', () => {
+  requireAdmin(() => {
+    renderEmpList();
+    document.getElementById('manageModal').classList.add('open');
+  });
+});
 document.getElementById('manageClose').addEventListener('click', () => document.getElementById('manageModal').classList.remove('open'));
 document.getElementById('manageModal').addEventListener('click', (e) => { if(e.target.id === 'manageModal') e.target.classList.remove('open'); });
 document.getElementById('addEmpBtn').addEventListener('click', addEmployee);
 document.getElementById('newEmpInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') addEmployee(); });
 
-document.getElementById('manageZonesBtn').addEventListener('click', () => { renderZoneList(); document.getElementById('manageZonesModal').classList.add('open'); });
+document.getElementById('manageZonesBtn').addEventListener('click', () => {
+  requireAdmin(() => {
+    renderZoneList();
+    document.getElementById('manageZonesModal').classList.add('open');
+  });
+});
 document.getElementById('manageZonesClose').addEventListener('click', () => document.getElementById('manageZonesModal').classList.remove('open'));
 document.getElementById('manageZonesModal').addEventListener('click', (e) => { if(e.target.id === 'manageZonesModal') e.target.classList.remove('open'); });
 document.getElementById('addZoneBtn').addEventListener('click', addZone);
