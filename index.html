@@ -299,6 +299,32 @@ th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
 .bar-bg{ background: var(--paper-dark); border-radius: 6px; height: 10px; width:100%; overflow:hidden; }
 .bar-fill{ background: var(--done); height:100%; }
 
+/* daily breakdown section */
+.daily-breakdown{ margin-top: 24px; background: var(--card-bg); border-radius: 8px; padding: 16px 18px; box-shadow: 0 4px 0 var(--shadow), 0 6px 14px rgba(43,58,74,0.10); }
+.daily-breakdown h3{ font-family:'Kalam', cursive; margin: 0 0 14px; text-align:center; font-size: 18px; }
+.daily-breakdown .legend-row{ display:flex; justify-content:center; gap: 14px; margin-bottom: 14px; font-size: 11px; color: var(--ink-soft); align-items:center; flex-wrap: wrap; }
+.daily-breakdown .legend-row .lsw{ display:inline-block; width:22px; height:22px; border-radius:4px; margin-right:4px; vertical-align:middle; text-align:center; line-height:22px; font-size:11px; font-weight:700; }
+.day-picker-bar{ display:flex; align-items:center; justify-content:center; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+.day-picker-bar button{ border:none; background: var(--paper-dark); color: var(--ink); font-family:'Sarabun',sans-serif; font-weight:600; font-size:16px; width:34px; height:34px; border-radius:50%; cursor:pointer; transition: transform .15s ease, background .15s ease; }
+.day-picker-bar button:hover{ background: var(--tape-2); transform: scale(1.08); }
+.day-picker-bar select{ border:2px solid var(--ink); background: var(--card-bg); color: var(--ink); font-family:'Sarabun',sans-serif; font-weight:600; font-size:14px; border-radius:20px; padding:6px 14px; cursor:pointer; appearance: auto; }
+.day-picker-bar .day-label{ font-weight:700; font-size:15px; color: var(--ink); min-width:120px; text-align:center; }
+.day-picker-bar .today-indicator{ background: var(--done); color:#fff; font-size:11px; font-weight:700; padding:3px 10px; border-radius:12px; }
+.daily-emp-list{ display:flex; flex-direction:column; gap:8px; }
+.daily-emp-row{ display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-radius:8px; border:1px solid var(--paper-dark); transition: background .15s ease; }
+.daily-emp-row:hover{ background: var(--paper); }
+.daily-emp-row .emp-info{ display:flex; align-items:center; gap:10px; }
+.daily-emp-row .emp-name-label{ font-weight:700; font-size:14px; color: var(--ink); }
+.daily-emp-row .status-badge{ display:inline-flex; align-items:center; gap:5px; padding:5px 14px; border-radius:20px; font-size:13px; font-weight:700; }
+.daily-emp-row .status-badge.done{ background: var(--done-bg); color: var(--done); }
+.daily-emp-row .status-badge.pending{ background: var(--pending-bg); color: var(--pending); }
+.daily-emp-row .status-badge.dayoff{ background: #E8E0F0; color: #7B61A6; }
+.daily-emp-row .status-badge.future{ background: #f5f0e8; color: #bbb; }
+.daily-emp-row .actions{ display:flex; align-items:center; gap:6px; }
+.dayoff-toggle{ border:2px solid #ccc; background: var(--card-bg); color: var(--ink-soft); font-family:'Sarabun',sans-serif; font-weight:600; font-size:12px; border-radius:20px; padding:5px 12px; cursor:pointer; transition: all .15s ease; display:inline-flex; align-items:center; gap:4px; }
+.dayoff-toggle:hover{ border-color: #7B61A6; background: #E8E0F0; color: #7B61A6; }
+.dayoff-toggle.active{ border-color: #7B61A6; background: #E8E0F0; color: #7B61A6; }
+
 /* toast (replaces alert) */
 .toast{
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
@@ -373,6 +399,7 @@ th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
       <h3>สรุปรายเดือนตามพนักงาน</h3>
       <table id="summaryTableBody"></table>
     </div>
+    <div class="daily-breakdown" id="dailyBreakdownSection"></div>
   </div>
 
   <div id="zonesView" style="display:none;">
@@ -1043,6 +1070,7 @@ async function loadMonth(year, month){
   const monthRecords = await fetchMonthRecords(year, month);
   renderCalendar(year, month, monthRecords);
   renderSummary(year, month, monthRecords);
+  await renderDailySummary(year, month, monthRecords);
 }
 
 function renderCalendar(year, month, monthRecords){
@@ -1121,6 +1149,186 @@ function renderSummary(year, month, monthRecords){
       </tr>
     `).join('')}
   `;
+}
+
+/* ---------------- Day-off helpers ---------------- */
+let DAYOFFS = {}; // key: "YYYY-MM-DD_empName" → true
+
+async function fetchDayoffs(){
+  if(!firebaseReady) return {};
+  try{
+    const snap = await db.collection('config').doc('dayoffs').get();
+    return snap.exists ? (snap.data().map || {}) : {};
+  }catch(e){ console.error(e); return {}; }
+}
+async function saveDayoffs(){
+  if(!firebaseReady) return;
+  try{ await db.collection('config').doc('dayoffs').set({map: DAYOFFS}); }
+  catch(e){ console.error(e); showToast('บันทึกวันหยุดไม่สำเร็จ: ' + e.message, true); }
+}
+function dayoffKey(dateStr, empName){
+  return dateStr + '_' + empName;
+}
+async function toggleDayoff(dateStr, empName){
+  const key = dayoffKey(dateStr, empName);
+  if(DAYOFFS[key]){
+    delete DAYOFFS[key];
+  } else {
+    DAYOFFS[key] = true;
+  }
+  await saveDayoffs();
+  // re-render only the daily summary for the current selected day
+  const monthRecords = await fetchMonthRecords(calYear, calMonth);
+  renderSummary(calYear, calMonth, monthRecords);
+  renderDailySummaryForDay(calYear, calMonth, monthRecords, dailySummarySelectedDay);
+}
+
+let dailySummarySelectedDay = null; // track the day selected in the daily summary picker
+let cachedMonthRecordsForDaily = {};
+
+/* ---------------- Daily breakdown per employee in monthly view ---------------- */
+async function renderDailySummary(year, month, monthRecords){
+  const container = document.getElementById('dailyBreakdownSection');
+  if(EMPLOYEES.length === 0){
+    container.innerHTML = '';
+    return;
+  }
+  // load dayoffs if not loaded
+  if(Object.keys(DAYOFFS).length === 0){
+    DAYOFFS = await fetchDayoffs();
+  }
+
+  cachedMonthRecordsForDaily = monthRecords;
+  const today = new Date();
+  const isCurrentMonth = (year === today.getFullYear() && month === today.getMonth());
+
+  // default to today if current month, else day 1
+  if(!dailySummarySelectedDay || dailySummarySelectedDay < 1){
+    dailySummarySelectedDay = isCurrentMonth ? today.getDate() : 1;
+  }
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  if(dailySummarySelectedDay > daysInMonth) dailySummarySelectedDay = daysInMonth;
+
+  // Build the shell with day picker
+  let html = '<h3>สรุปรายวันตามพนักงาน</h3>';
+  html += `<div class="legend-row">
+    <span><span class="lsw done" style="background:var(--done-bg);color:var(--done);">✓</span> ทำแล้ว</span>
+    <span><span class="lsw pending" style="background:var(--pending-bg);color:var(--pending);">✗</span> ยังไม่ได้ทำ</span>
+    <span><span class="lsw dayoff" style="background:#E8E0F0;color:#7B61A6;">🛑</span> วันหยุด</span>
+  </div>`;
+
+  // Day picker bar
+  html += '<div class="day-picker-bar">';
+  html += '<button id="dailySumPrev" title="วันก่อนหน้า">‹</button>';
+  html += '<select id="dailySumDaySelect">';
+  for(let d=1; d<=daysInMonth; d++){
+    const sel = d === dailySummarySelectedDay ? ' selected' : '';
+    html += `<option value="${d}"${sel}>วันที่ ${d}</option>`;
+  }
+  html += '</select>';
+  html += '<button id="dailySumNext" title="วันถัดไป">›</button>';
+  const selectedDateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(dailySummarySelectedDay).padStart(2,'0')}`;
+  if(selectedDateStr === todayStr()){
+    html += '<span class="today-indicator">วันนี้</span>';
+  }
+  html += '</div>';
+
+  // Employee list container
+  html += '<div id="dailySumContent"></div>';
+
+  container.innerHTML = html;
+
+  // Wire up day picker events
+  document.getElementById('dailySumDaySelect').addEventListener('change', (e) => {
+    dailySummarySelectedDay = parseInt(e.target.value);
+    renderDailySummaryForDay(year, month, cachedMonthRecordsForDaily, dailySummarySelectedDay);
+  });
+  document.getElementById('dailySumPrev').addEventListener('click', () => {
+    if(dailySummarySelectedDay > 1){
+      dailySummarySelectedDay--;
+      document.getElementById('dailySumDaySelect').value = dailySummarySelectedDay;
+      renderDailySummaryForDay(year, month, cachedMonthRecordsForDaily, dailySummarySelectedDay);
+    }
+  });
+  document.getElementById('dailySumNext').addEventListener('click', () => {
+    const maxDay = new Date(year, month+1, 0).getDate();
+    if(dailySummarySelectedDay < maxDay){
+      dailySummarySelectedDay++;
+      document.getElementById('dailySumDaySelect').value = dailySummarySelectedDay;
+      renderDailySummaryForDay(year, month, cachedMonthRecordsForDaily, dailySummarySelectedDay);
+    }
+  });
+
+  // Render for the initially selected day
+  renderDailySummaryForDay(year, month, monthRecords, dailySummarySelectedDay);
+}
+
+function renderDailySummaryForDay(year, month, monthRecords, day){
+  const contentEl = document.getElementById('dailySumContent');
+  if(!contentEl) return;
+
+  const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  const today = todayStr();
+  const isFuture = dateStr > today;
+  const isToday = dateStr === today;
+  const records = monthRecords[dateStr];
+
+  // Update today indicator
+  const pickerBar = contentEl.parentElement.querySelector('.day-picker-bar');
+  const existingIndicator = pickerBar.querySelector('.today-indicator');
+  if(existingIndicator) existingIndicator.remove();
+  if(isToday){
+    const badge = document.createElement('span');
+    badge.className = 'today-indicator';
+    badge.textContent = 'วันนี้';
+    pickerBar.appendChild(badge);
+  }
+
+  let html = '<div class="daily-emp-list">';
+  EMPLOYEES.forEach((name, idx) => {
+    const key = dayoffKey(dateStr, name);
+    const isDayoff = !!DAYOFFS[key];
+    const isDone = records && records[name] && records[name].status === 'done';
+
+    let statusHtml, statusClass;
+    if(isFuture){
+      statusHtml = '— ยังไม่ถึงวัน —';
+      statusClass = 'future';
+    } else if(isDayoff){
+      statusHtml = '🛑 วันหยุด';
+      statusClass = 'dayoff';
+    } else if(isDone){
+      statusHtml = '✓ ทำแล้ว';
+      statusClass = 'done';
+    } else {
+      statusHtml = '✗ ยังไม่ได้ทำ';
+      statusClass = 'pending';
+    }
+
+    html += `<div class="daily-emp-row">
+      <div class="emp-info">
+        <span class="emp-name-label">${idx+1}. ${escapeHtml(name)}</span>
+        <span class="status-badge ${statusClass}">${statusHtml}</span>
+      </div>
+      <div class="actions">
+        ${!isFuture ? `<button class="dayoff-toggle${isDayoff ? ' active' : ''}" data-date="${dateStr}" data-emp="${escapeHtml(name)}">
+          🛑 ${isDayoff ? 'ยกเลิกวันหยุด' : 'ตั้งวันหยุด'}
+        </button>` : ''}
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+
+  contentEl.innerHTML = html;
+
+  // attach dayoff button events
+  contentEl.querySelectorAll('.dayoff-toggle').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const d = btn.dataset.date;
+      const e = btn.dataset.emp;
+      await toggleDayoff(d, e);
+    });
+  });
 }
 
 /* ---------------- Zones tab render ---------------- */
@@ -1256,6 +1464,7 @@ document.getElementById('newZoneInput').addEventListener('keydown', (e) => { if(
   await loadEmployeeNotes();
   await loadEmployees();
   await loadZones();
+  DAYOFFS = await fetchDayoffs();
   const t = new Date();
   zoneYear = t.getFullYear(); zoneMonth = t.getMonth(); zoneHalf = t.getDate() <= 15 ? 0 : 1;
   await loadDay(currentDate);
