@@ -293,6 +293,12 @@ input[type="file"]{ display:none; }
 
 .summary-table{ margin-top: 24px; background: var(--card-bg); border-radius: 8px; padding: 16px 18px; box-shadow: 0 4px 0 var(--shadow), 0 6px 14px rgba(43,58,74,0.10); }
 .summary-table h3{ font-family:'Kalam', cursive; margin: 0 0 12px; text-align:center; font-size: 18px; }
+.workdays-inline{ width:46px; border:2px solid var(--paper-dark); background:var(--card-bg); color:var(--ink); font-family:'Sarabun',sans-serif; font-weight:700; font-size:12px; border-radius:6px; padding:3px 4px; text-align:center; transition: border-color .2s; }
+.workdays-inline:focus{ outline:none; border-color:var(--tape-2); }
+.pct-cell{ font-weight:700; font-size:13px; text-align:center; }
+.pct-cell.high{ color:#27ae60; }
+.pct-cell.mid{ color:#f39c12; }
+.pct-cell.low{ color:#e74c3c; }
 table{ width:100%; border-collapse: collapse; font-size: 13px; }
 th, td{ text-align:left; padding: 7px 8px; border-bottom: 1px solid var(--paper-dark); }
 th{ color: var(--ink-soft); font-weight:600; font-size:12px; }
@@ -1124,15 +1130,20 @@ function daysElapsedInMonth(year, month){
   return isFutureMonth ? 0 : daysInMonth;
 }
 
+// Per-employee working days: empName → user-set value
+let empWorkdays = {};
+
 function renderSummary(year, month, monthRecords){
   const elapsed = daysElapsedInMonth(year, month) || 1;
+
   const rows = EMPLOYEES.map(name => {
     let done = 0;
     Object.values(monthRecords).forEach(records => {
       if(records[name] && records[name].status === 'done') done++;
     });
-    const pct = Math.round((done/elapsed)*100);
-    return { name, done, pct: Math.min(pct,100) };
+    const workdays = empWorkdays[name] != null ? empWorkdays[name] : elapsed;
+    const pct = workdays > 0 ? Math.round((done/workdays)*100) : 0;
+    return { name, done, workdays, pct: Math.min(pct,100) };
   });
   const table = document.getElementById('summaryTableBody');
   if(rows.length === 0){
@@ -1140,15 +1151,46 @@ function renderSummary(year, month, monthRecords){
     return;
   }
   table.innerHTML = `
-    <tr><th>พนักงาน</th><th>ทำแล้ว (วัน)</th><th style="width:45%;">สัดส่วน</th></tr>
-    ${rows.map(r => `
+    <tr><th>พนักงาน</th><th>ทำแล้ว</th><th>วันทำงาน</th><th style="width:28%;">สัดส่วน</th><th>%</th></tr>
+    ${rows.map(r => {
+      let pctClass = 'low';
+      if(r.pct >= 80) pctClass = 'high';
+      else if(r.pct >= 50) pctClass = 'mid';
+      return `
       <tr>
-        <td>${r.name}</td>
-        <td>${r.done}/${elapsed}</td>
+        <td>${escapeHtml(r.name)}</td>
+        <td style="text-align:center;">${r.done}</td>
+        <td style="text-align:center;"><input type="number" class="workdays-inline" data-emp="${escapeHtml(r.name)}" min="1" max="31" value="${r.workdays}"></td>
         <td><div class="bar-bg"><div class="bar-fill" style="width:${r.pct}%;"></div></div></td>
+        <td class="pct-cell ${pctClass}">${r.pct}%</td>
       </tr>
-    `).join('')}
+    `;
+    }).join('')}
   `;
+
+  // Attach per-employee workdays input listeners
+  table.querySelectorAll('.workdays-inline').forEach(input => {
+    input.addEventListener('input', () => {
+      const emp = input.dataset.emp;
+      const val = parseInt(input.value);
+      if(val > 0){
+        empWorkdays[emp] = val;
+      } else {
+        delete empWorkdays[emp];
+      }
+      // Re-calculate just the row without full re-render
+      const tr = input.closest('tr');
+      const done = parseInt(tr.children[1].textContent) || 0;
+      const workdays = val > 0 ? val : elapsed;
+      const pct = Math.min(Math.round((done/workdays)*100), 100);
+      // Update bar
+      tr.querySelector('.bar-fill').style.width = pct + '%';
+      // Update % cell
+      const pctCell = tr.querySelector('.pct-cell');
+      pctCell.textContent = pct + '%';
+      pctCell.className = 'pct-cell ' + (pct >= 80 ? 'high' : pct >= 50 ? 'mid' : 'low');
+    });
+  });
 }
 
 /* ---------------- Day-off helpers ---------------- */
@@ -1416,11 +1458,13 @@ document.getElementById('datePicker').addEventListener('change', (e) => { if(e.t
 document.getElementById('prevMonth').addEventListener('click', () => {
   let m = calMonth - 1, y = calYear;
   if(m < 0){ m = 11; y--; }
+  empWorkdays = {};
   loadMonth(y, m);
 });
 document.getElementById('nextMonth').addEventListener('click', () => {
   let m = calMonth + 1, y = calYear;
   if(m > 11){ m = 0; y++; }
+  empWorkdays = {};
   loadMonth(y, m);
 });
 
